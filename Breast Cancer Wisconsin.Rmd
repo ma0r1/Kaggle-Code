@@ -11,7 +11,7 @@ output:
 ---
 ## Breast Cancer Wisconsin   
 
-This dataset is from UCI Machine Learning was post on [this kaggle page](https://www.kaggle.com/uciml/breast-cancer-wisconsin-data).
+This dataset is from UCI Machine Learning was posted on [this kaggle page](https://www.kaggle.com/uciml/breast-cancer-wisconsin-data).
 I use lasso regularization with logistic regression for this dataset. 
 ```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(message=FALSE,echo = FALSE)
