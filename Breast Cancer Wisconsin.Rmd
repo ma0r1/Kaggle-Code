@@ -1,0 +1,509 @@
+---
+title: "Breast Cancer Wisconsin"
+author: "Maor Ankri"
+date: "September 08, 2021"
+output:
+  html_document: default
+  output: 
+    html_document:
+        fig_width: 12
+        fig_height: 8
+---
+## Breast Cancer Wisconsin   
+
+This dataset is from UCI Machine Learning, and was post on [this kaggle page](https://www.kaggle.com/uciml/breast-cancer-wisconsin-data).
+I use lasso regularization with logistic regression for this dataset. 
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(message=FALSE,echo = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(patchwork)
+library(kableExtra)
+library(ggcorrplot)
+
+df_raw = read.csv("breast cancer.csv")
+
+df = df_raw %>% select(-X) 
+
+```
+
+
+### A few things to check before we start {.tabset}
+
+#### How does the dataset look like?
+
+569 X 33 data frame
+
+```{r results='asis'}
+
+kable(head(df)) %>%
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px") 
+
+```
+
+#### Variable types
+
+```{r}
+str(df)
+df$diagnosis = as.factor(df$diagnosis)
+```
+
+#### Missing values
+
+No missing values 
+```{r}
+colSums(is.na(df)) 
+```
+
+#### Unique values
+
+The number of unique IDs is equal to number of observations in this dataframe.
+So each row a represents unique observation. Let's drop the id column as we don't gain any
+additional information from it.
+```{r}
+apply(df,2,function(x) length(unique(x)))
+
+df = df %>% select(-id)
+```
+
+
+#### Summary statistics 
+
+We may need to scale the data before modeling
+```{r results='asis'}
+num.dat = df %>% select_if(is.numeric)
+
+ apply(num.dat,2,function(x) round(summary(x),3)) %>% 
+   kbl() %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered")) %>% 
+    kable_paper() %>%
+  scroll_box(width = "100%", height = "320px")
+```
+
+## {-}
+
+<br/>
+
+The correlation plot shows that there are quite a few highly correlated variables.  
+We will take that into consideration in setting up the model.
+```{r,fig.height = 6, fig.width = 7}
+
+
+ggcorrplot(cor(df[,-1]),tl.cex  = 9,tl.srt = 50,title = "Correlation heat-map")
+
+```
+
+
+
+
+
+### One dimension sepration of classes acroos variables
+
+Both plots attempt to capture how well separated are both classes across all variables in the dataframe.  
+We expect that a variable which provides good separation might have strong predictive power as well.  
+  
+  
+* right: Density distribution plot 
+* left: confidence intervals for the sample mean determined by bootstrap resampling.  
+<br/>
+Overall, quite a few variables can separate the two classes well enough.
+```{r,fig.height = 6, fig.width = 14}
+
+scaled_df = df %>% mutate(across(where(is.numeric), scale))
+
+scaled_M = scaled_df %>% filter(diagnosis == "M")
+
+scaled_B = scaled_df %>% filter(diagnosis == "B")
+
+#custom function to calculate confidence interval for the sample mean for all
+#numeric columns using bootstrap
+#Not very efficient, please let me know if you have a better implementation of this code.
+
+mean_bootstrap_data = function(data.frame,boots_number) {
+
+require(boot)
+require(tidyverse)
+
+numeric_cols = unlist(lapply(data.frame, is.numeric))
+
+data = data.frame[,numeric_cols]
+
+ci_list = list()
+
+meanfun <- function(data, idx)
+{
+  dt <- data[idx, ]
+   c(mean(dt[,i]))
+}
+
+for (i in seq(ncol(data))) {
+
+bootstrap <- boot(data, meanfun, R = boots_number)
+ci_list[[i]] = cbind(boot.ci(boot.out = bootstrap,
+       type = "norm")$normal, colnames(data)[i])
+}
+dt_matrix = do.call(rbind, ci_list)
+data_output = dt_matrix %>%
+as.data.frame() %>%
+rename(lower_bound = V2, upper_bound = V3, variable = V4) %>%
+mutate(across(c("lower_bound", "upper_bound"), as.numeric),
+         mean = (lower_bound+upper_bound)/2)
+return(data_output)
+}
+
+set.seed(1)
+
+ci_B = mean_bootstrap_data(scaled_B,2500) %>% mutate(diagnosis = "B")
+ci_M = mean_bootstrap_data(scaled_M,2500) %>% mutate(diagnosis = "M")
+boots_ci = rbind(ci_M,ci_B)
+
+
+Palette1 = c('cyan3','firebrick1')
+boots_ci = boots_ci %>%  mutate(name = fct_reorder(variable, (mean)))
+
+ci_plot = ggplot(boots_ci,aes(name,mean,color = diagnosis))+
+geom_errorbar(aes(ymin = lower_bound,ymax = upper_bound))+
+geom_point()+
+coord_flip()+
+theme_minimal()+
+scale_color_manual(values = Palette1)+
+ggtitle("Bootstrap Confidence Intervals - Columns Means")+
+theme(
+  axis.title.y=element_blank(),
+  legend.position = "none",
+  plot.title = element_text(size = 16,face = "bold.italic"),
+  axis.text.y = element_text(size = 10,face = "bold")
+)
+
+
+df_long = df %>% pivot_longer(cols = where(is.numeric),names_to = "variable")
+levels_order = levels(fct_rev((boots_ci$name)))
+df_long$variable = factor(df_long$variable, levels = levels_order) # So we get the same order of variables in both plots
+
+dens_plot = ggplot(df_long, aes(value,fill = diagnosis)) +
+  geom_density(alpha = 0.4) +
+  facet_wrap(~variable,scales = "free")+
+  theme(
+        axis.ticks.y=element_blank(),
+                axis.title.y=element_blank(),
+                axis.text.y=element_blank(),
+               axis.ticks.x=element_blank(),
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+        strip.text.x = element_text(size = 8, color = "black"),
+        plot.title = element_text(size = 16,face = "bold.italic")
+        )+
+  scale_fill_manual(values = Palette1)+
+  ggtitle("Density")
+
+
+ci_plot+dens_plot
+
+
+```
+
+Assuming you're familiar with logistic regression and lasso regression, penalized logistic regression is a natural extension/combination of the two. Just as in lasso regression, by incorporating the L1 norm penalty into the cost function we can perform feature selection and shrinkage of coefficients simultaneously.  
+Mathematically, Our goal is to minimize the following likelihood function:
+
+
+$$\min_{(\beta_0, \beta) \in \mathbb{R}^{p+1}} -\left[\frac{1}{N} \sum_{i=1}^N y_i \cdot (\beta_0 + x_i^T \beta) - \log (1+e^{(\beta_0+x_i^T \beta)})\right] + \lambda \big[\|\beta\|_1\big]$$
+
+
+We set up the framework the model using tidymodels.  
+We split the dataset and create cross - validation folds 
+to estimate the optimal penalty.  
+Terminology note: throughout this notebook I use "lambda" and "penalty" interchangeably.
+<br/>
+```{r}
+set.seed(1)
+
+splits = initial_split(df)
+train = training(splits)
+test = testing(splits)
+folds = vfold_cv(train, v = 10 , strata = diagnosis)
+
+lr_mod = logistic_reg(penalty = tune(), mixture = 1) %>% 
+        set_engine("glmnet") 
+
+lr_recipe = recipe(diagnosis ~ ., data = train) %>% 
+            step_normalize(all_numeric(), -all_outcomes()) %>% 
+  #The mathematical structure of lasso enforces normalization 
+             step_corr(all_numeric(), -all_outcomes(),threshold = 0.9)
+  #We drop highly correlated variables
+
+model_train_data = lr_recipe %>% prep() %>% bake(train) 
+#  we are left with 20 predictors of the 30 we had started with due to collinearity
+
+```
+
+* After short pre-processing (outlined in recipe()), we are left with 20 variables;
+tidymodels dropped 10 correlated variables.
+* Let's see if we can obtain satisfactory results using those 20.
+* Hopefully, we may be able to shrink this number even further using lasso and still achieve good results.
+<br/>
+So we follow these steps:
+* 1. Generate different values of lambdas  
+* 2. Preform cross - validation using different lambda each time
+* 3. Determine the optimal penalty by comparing pre-set metrics
+* 4. Apply the model with the desired penalty to the test set.  
+<br/>
+Obtaining the table below upon completion of step 2 we examine the 3 best lambdas values for each of the following metrics: 
+* *Roc_curve*
+* *Recall* 
+* *Precision*
+
+
+```{r}
+
+wflow = workflow() %>%
+  add_model(lr_mod) %>%
+  add_recipe(lr_recipe)
+
+set.seed(1)
+grid = grid_regular(penalty(), levels = 50)
+# The grid contains all levels of lambdas we are going check using cv.
+
+lr_res = wflow %>% 
+        tune_grid(folds,
+            grid = grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc,recall,precision)) 
+
+#extract the results
+
+top_penalties = lr_res %>% 
+  collect_metrics() %>%
+  select(-c(.config,n,.estimator)) %>% 
+  mutate(penalty = round(penalty,6)) %>% 
+  rename(cv.mean = mean) %>% 
+  arrange(desc(cv.mean)) %>%
+  group_by(.metric) %>% 
+  slice(1:3) %>% 
+  arrange(desc(.metric))
+
+#Create a table
+
+top_penalties %>%
+  ungroup() %>% 
+  select(-c(.metric)) %>% 
+  round(digits = 5) %>% 
+  
+  kable() %>%
+  kable_classic_2(full_width = F,font_size = 16,html_font = "Cambria") %>% 
+  pack_rows(
+            index = c("roc_auc" = 3, "Recall" = 3, "Precision" = 3),
+            label_row_css = "background-color: #666; color: #fff;"
+            ) %>% 
+  row_spec(1, bold = TRUE, underline = TRUE, background = "yellow") %>% 
+  row_spec(0, bold = TRUE, font_size = 16,background = "grey",color = "white",underline = TRUE) %>% 
+  column_spec(c(1:3), border_right = TRUE,border_left = TRUE) %>% 
+  add_header_above(c(" " = 1, "Top Three Lambdas For Each Metric" = 2),
+                   bold = T,
+                   italic = T,
+                   font_size = 16)
+
+best_penalty = top_penalties[7,1]$penalty
+
+
+
+```
+
+There are a few  methods and metrics to consider when choosing the optimal penalty - 
+select_by_one_std_err() or select_by_pct_loss().
+For our purposes let's stick to choosing the penalty which maximizes the **ROC CURVE** metric. In our case case that would be $$\lambda \approx 0.003$$
+ 
+
+#### *Metrics plot*
+
+This plot shows lambda's effect on each metric.  
+It demonstrates nicely the trade off between recall and precision as lambda increases.  
+* The vertical line indicates the best penalty (= maximizes roc_curve) determined by cross validation.  
+* Any lambda chosen from the shaded area would be, in my estimation, a reasonable choise. 
+```{r,fig.height = 4, fig.width = 10,warning=FALSE}
+
+  lr_res %>% 
+  collect_metrics() %>% 
+  ggplot(aes(penalty,mean,color = .metric))+
+  
+  geom_point()+
+  geom_line()+
+  annotate("rect",xmin=0.001, xmax=0.03,
+                  ymin=0.9, ymax=1,
+                  alpha = 0.2,fill = "orange")+
+  geom_errorbar(aes(ymin = mean - std_err,ymax = mean + std_err))+
+  geom_vline(xintercept = best_penalty)+
+  annotate("text", x = 5*1e-5 , y = 0.925, label ="Best Penalty - \n 0.003")+
+  
+  scale_x_log10(labels = scales::scientific)+
+  facet_grid(~.metric ,scales = "free_y")+
+  ylim(c(0.9,1)) +
+  theme_light()+
+  theme(legend.position = "none",
+        strip.text.x = element_text(size = 10, face = "bold"))
+
+
+```
+
+
+```{r}
+# Let's extract the coefficients for each penalty
+fit = wflow %>% 
+  fit(data = train) 
+
+coef_by_lambda = fit %>% 
+  pull_workflow_fit() %>%
+  pluck("fit") %>% 
+  coef(s = grid$penalty)
+
+# coef_by_lambda = fit  %>% 
+# workflowsets::extract_fit_parsnip()%>% 
+#   pluck("fit") %>% 
+#   coef(s = grid$penalty) 
+
+# we get a matrix, let's tidy it up
+colnames(coef_by_lambda) <- grid$penalty
+coef_by_lambda= as.data.frame(as.matrix(coef_by_lambda))
+coef_by_lambda = cbind(variable = c("Intercept",colnames(model_train_data[,-21])),coef_by_lambda)
+coef_by_lambda = coef_by_lambda %>% pivot_longer(cols = 2:51, names_to = "penalty")
+coef_by_lambda$penalty = as.numeric(coef_by_lambda$penalty)
+```
+
+### coefficients {.tabset}
+
+#### Coefficients plot 
+Lasso shrinks the coefficients as lambda increases.  
+You can obtain this plot easily using the "glmnet" package, but I wanted to make it myself anyway.  
+There too many coefficients plotted altogether - facet in the next tab. 
+```{r,fig.width = 10,fig.height=5.5}
+coef_by_lambda %>% 
+  ggplot(aes(penalty,value,color = variable))+
+  scale_x_log10(labels = scales::scientific)+
+  geom_line()+
+  geom_point(size = 1)+
+  geom_vline(xintercept = best_penalty)+
+  annotate("text",x = best_penalty*5,y = 10,label = "Best Penalty - \n 0.003")+
+  ylab("coefficient_estimate")+
+  theme_classic()+
+  theme(legend.position = "bottom")+
+  ggtitle("Coefficients Shrink As Lambda Increases")
+
+```
+
+
+#### Coefficients facet plot
+This plot is a facet of the previous one.  
+A variable is "Important" if it a gets non-zero coefficient for lambda = 0.003 (the penalty we chose for our model).
+```{r,fig.height=8,fig.width=10}
+
+zero_at_best =  coef_by_lambda %>%
+    arrange((penalty)) %>% 
+    mutate(diff = abs(best_penalty - penalty)) %>% 
+    arrange((diff),value) %>% 
+    slice(1:21) %>% 
+    mutate(variable_importance = ifelse(round(value,3)==0,"Unimportant","Imortant")) 
+
+coef_by_lambda2 =  merge(coef_by_lambda,zero_at_best[,-c(2,3)],by = c("variable")) 
+
+
+coef_by_lambda2 %>% 
+  ggplot(aes(penalty,value,color = variable_importance))+
+  scale_x_log10(labels = scales::scientific)+
+  geom_line(size = 1.2)+
+   facet_wrap(~ variable_importance ~ variable,scales = "free_y",ncol = 5)+
+   geom_hline(yintercept = 0 , color = "purple",size = 1)+
+    geom_vline(xintercept = best_penalty,size = 1)+
+  theme_light()+
+  theme(strip.text = element_text(colour = 'black',size = 10),legend.position = "top",legend.text = element_text(size = 12))
+      
+  
+
+```
+
+#### Coefficients table for best lambda
+This table shows the coefficients for the best lambda (=0.003 approx).
+We got 3 negative, 8 positive and 10 which lasso set to zero.
+```{r}
+
+coef_by_lambda %>%
+  group_by(variable) %>% 
+  slice(38) %>% 
+  ungroup() %>% 
+  select(-penalty) %>% 
+  arrange(value) %>% 
+  
+  kable() %>% 
+  kable_classic(full_width = F,html_font = "Cambria") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"),full_width = F) %>% 
+  row_spec(0, bold = TRUE, font_size = 16,background = "grey",color = "white",underline = TRUE) %>% 
+  column_spec(1,background = "bisque", color = "steelblue") %>% 
+  scroll_box(width = "60%", height = "400px") 
+
+```
+
+## {-}
+
+### Model preformance {.tabset}
+Finally, we apply the model to the test set.  
+Overall, we were able to achieve good results. 
+
+#### Model Accuracy
+```{r}
+wflow = workflow() %>%
+  add_model(lr_mod) %>%
+  add_recipe(lr_recipe)
+
+
+best_lambda = lr_res %>% 
+  select_best("roc_auc")
+
+final_wflow <- finalize_workflow(
+  wflow,
+  best_lambda
+)
+
+
+
+final_fit = last_fit(
+  final_wflow,
+  splits
+) 
+
+
+preds = final_fit %>% collect_predictions()
+
+final_fit %>%
+  collect_metrics() %>%
+  as.data.frame() %>% 
+  select(-.estimator,-.config) %>% 
+  kable() %>% 
+  kable_classic(full_width = F,font_size = 16,html_font = "Cambria") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+#### Confusion Matrix
+```{r}
+
+
+
+preds %>% conf_mat(truth = diagnosis , estimate = .pred_class)
+
+```
+#### Roc Curve
+```{r}
+preds %>% roc_curve(truth = diagnosis , estimate = .pred_B) %>% autoplot()
+
+```
+
+
+## {-}
+
+
+
+
